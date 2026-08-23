@@ -3,6 +3,9 @@ import time
 from typing import Any, Dict, List, Optional
 import requests
 from tqdm import tqdm
+import json
+from typing import Any, Dict, List, Optional
+
 
 
 class Instagram:
@@ -224,6 +227,102 @@ class Instagram:
             print(f"[!] Error en get_id_by_search: {e}")
         return None
 
+    def get_following(
+        self,
+        target_user_id: str,
+        referer: Optional[str] = None,
+        max_id: Optional[str] = None,
+        count: int = 12,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Obtiene una página de seguidos (following) de `target_user_id`.
+        """
+        url = f"{self.BASE_URL}/api/v1/friendships/{target_user_id}/following/"
+        params: Dict[str, str] = {
+            "count": str(count),
+            "search_surface": "follow_list_page",
+        }
+
+        if max_id and str(max_id) != "0":
+            params["max_id"] = str(max_id)
+
+        req_headers = {}
+        if referer:
+            req_headers["Referer"] = (
+                f"{self.BASE_URL}/{referer}/"
+                if not referer.startswith("http")
+                else referer
+            )
+        else:
+            req_headers["Referer"] = f"{self.BASE_URL}/"
+
+        try:
+            response = self.session.get(url, params=params, headers=req_headers)
+            response.raise_for_status()
+            if "application/json" not in response.headers.get("Content-Type", ""):
+                print(f"[!] Respuesta no JSON de Instagram (posible checkpoint/bloqueo). Status: {response.status_code}")
+                return None
+            return response.json()
+        except requests.exceptions.HTTPError as err:
+            print(
+                f"[!] Error HTTP {err.response.status_code}: {err.response.text}"
+            )
+        except Exception as e:
+            print(f"[!] Error inesperado en get_following: {e}")
+        return None
+
+    def get_all_following(
+        self,
+        target_user_id: str,
+        referer: Optional[str] = None,
+        delay_range: tuple = (0.5, 1.5),
+        show_progress: bool = True,
+        total: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Obtiene la lista completa de usuarios a los que sigue `target_user_id` paginando mediante `next_max_id`.
+        """
+        print(f"[*] Obteniendo todos los seguidos para ID: {target_user_id}...")
+        persons = []
+        continuar = True
+        max_id = None
+
+        pbar = None
+        if show_progress:
+            pbar = tqdm(
+                total=total,
+                unit="contactos",
+                desc=f"Recolectando seguidos de @{referer if referer else target_user_id}",
+            )
+
+        try:
+            while continuar:
+                data = self.get_following(
+                    target_user_id=target_user_id, referer=referer, max_id=max_id
+                )
+                if not data:
+                    break
+
+                users = data.get("users", [])
+                persons.extend(users)
+
+                if pbar:
+                    pbar.update(len(users))
+
+                continuar = data.get("has_more", False)
+                max_id = data.get("next_max_id")
+
+                if continuar and max_id:
+                    time.sleep(random.uniform(*delay_range))
+                else:
+                    break
+        finally:
+            if pbar:
+                pbar.close()
+
+        print(f"[+] Total de seguidos obtenidos: {len(persons)}")
+        return persons
+
     def search_in_followers(
         self, target_user_id: str, search_query: str
     ) -> Optional[Dict[str, Any]]:
@@ -243,6 +342,9 @@ class Instagram:
         try:
             response = self.session.get(url, params=params, headers=req_headers)
             response.raise_for_status()
+            if "application/json" not in response.headers.get("Content-Type", ""):
+                print(f"[!] Respuesta no JSON de Instagram (posible checkpoint/bloqueo). Status: {response.status_code}")
+                return None
             data = response.json()
             users = data.get("users", [])
 
@@ -260,9 +362,190 @@ class Instagram:
             print(f"[!] Error inesperado en search_in_followers: {e}")
         return None
 
+    def search_in_following(
+        self, target_user_id: str, search_query: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Busca si un usuario o query específico aparece en la lista de seguidos (following) de `target_user_id`.
+        """
+        query_clean = search_query.strip().lower()
+        url = f"{self.BASE_URL}/api/v1/friendships/{target_user_id}/following/"
+
+        params = {
+            "count": "12",
+            "query": query_clean,
+            "search_surface": "follow_list_page",
+        }
+        req_headers = {"Referer": f"{self.BASE_URL}/"}
+
+        try:
+            response = self.session.get(url, params=params, headers=req_headers)
+            response.raise_for_status()
+            if "application/json" not in response.headers.get("Content-Type", ""):
+                print(f"[!] Respuesta no JSON de Instagram (posible checkpoint/bloqueo). Status: {response.status_code}")
+                return None
+            data = response.json()
+            users = data.get("users", [])
+
+            for user in users:
+                if user.get("username", "").lower() == query_clean:
+                    return {"is_following": True, "is_follower": True, "user_data": user}
+
+            return {"is_following": False, "is_follower": False, "similar_results": users}
+
+        except requests.exceptions.HTTPError as err:
+            print(
+                f"[!] Error HTTP {err.response.status_code}: {err.response.text}"
+            )
+        except Exception as e:
+            print(f"[!] Error inesperado en search_in_following: {e}")
+        return None
+
     # Alias camelCase para mantener compatibilidad
     getContacts = get_contacts
     getAllcontacts = get_all_contacts
+    getFollowing = get_following
+    getAllfollowing = get_all_following
+
+    def contacts_follow_to(self, contacts, target_id, target_name):
+        contacts_clean = [contact for contact in contacts if contact['is_private'] == False and target_id != contact['id']]
+        seguidores = []
+        for contact in tqdm(contacts_clean):
+            respuesta = self.search_in_followers(contact['id'], target_name)
+
+            time.sleep(3+random.random())
+            if respuesta and respuesta.get('is_follower'): 
+                seguidores.append(respuesta)
+        return seguidores
+
+    def contacts_follow_to1(
+        self,
+        contacts: List[Dict[str, Any]],
+        target_id: str | int,
+        target_name: str,
+        checkpoint_file: Optional[str] = "checkpoint_seguidores.jsonl",
+        min_delay: float = 1.5,
+        max_delay: float = 3.5,
+    ) -> List[Dict[str, Any]]:
+        """Busca qué contactos públicos tienen a `target_name` en sus seguidores (followers), con persistencia
+
+        incremental y captura de excepciones.
+        """
+        target_id_str = str(target_id)
+        target_name_clean = target_name.strip().lower()
+
+        # 1. Filtrado seguro usando .get() y normalización a string
+        contacts_clean = [
+            c
+            for c in contacts
+            if isinstance(c, dict)
+            and not c.get("is_private", True)
+            and str(c.get("id", c.get("pk", ""))) != target_id_str
+        ]
+
+        seguidores = []
+
+        try:
+            for contact in tqdm(contacts_clean, desc="Verificando seguidores"):
+                c_id = str(contact.get("id", contact.get("pk", "")))
+                if not c_id:
+                    continue
+
+                try:
+                    respuesta = self.search_in_followers(c_id, target_name_clean)
+
+                    # 2. Validación de respuesta nula antes de indexar
+                    if respuesta and isinstance(respuesta, dict):
+                        if respuesta.get("is_follower"):
+                            seguidores.append(contact)
+
+                            # 3. Guardado incremental (checkpointing en tiempo real)
+                            if checkpoint_file:
+                                with open(
+                                    checkpoint_file, "a", encoding="utf-8"
+                                ) as f:
+                                    f.write(
+                                        json.dumps(contact, ensure_ascii=False)
+                                        + "\n"
+                                    )
+
+                except Exception as e:
+                    print(f"\n[!] Error procesando contacto {c_id}: {e}")
+
+                # 4. Pausa aleatoria con jitter más amplio para evitar bloqueos
+                time.sleep(random.uniform(min_delay, max_delay))
+
+        except KeyboardInterrupt:
+            print(
+                f"\n[!] Proceso pausado manualmente por el usuario. Retornando {len(seguidores)} resultados parciales..."
+            )
+
+        return seguidores
+
+    def contacts_following_to1(
+        self,
+        contacts: List[Dict[str, Any]],
+        target_id: str | int,
+        target_name: str,
+        checkpoint_file: Optional[str] = "checkpoint_siguiendo.jsonl",
+        min_delay: float = 1.5,
+        max_delay: float = 3.5,
+    ) -> List[Dict[str, Any]]:
+        """Busca qué contactos públicos siguen a `target_name` consultando la lista de seguidos (following) de cada contacto,
+
+        con persistencia incremental y captura de excepciones.
+        """
+        target_id_str = str(target_id)
+        target_name_clean = target_name.strip().lower()
+
+        # 1. Filtrado seguro ignorando cuentas privadas y al propio target
+        contacts_clean = [
+            c
+            for c in contacts
+            if isinstance(c, dict)
+            and not c.get("is_private", True)
+            and str(c.get("id", c.get("pk", ""))) != target_id_str
+        ]
+
+        seguidores = []
+
+        try:
+            for contact in tqdm(contacts_clean, desc="Verificando seguidos (following)"):
+                c_id = str(contact.get("id", contact.get("pk", "")))
+                if not c_id:
+                    continue
+
+                try:
+                    # Se busca si target_name está en los seguidos del contacto c_id
+                    respuesta = self.search_in_following(c_id, target_name_clean)
+
+                    # 2. Validación de respuesta antes de indexar
+                    if respuesta and isinstance(respuesta, dict):
+                        if respuesta.get("is_following") or respuesta.get("is_follower"):
+                            seguidores.append(contact)
+
+                            # 3. Guardado incremental
+                            if checkpoint_file:
+                                with open(
+                                    checkpoint_file, "a", encoding="utf-8"
+                                ) as f:
+                                    f.write(
+                                        json.dumps(contact, ensure_ascii=False)
+                                        + "\n"
+                                    )
+
+                except Exception as e:
+                    print(f"\n[!] Error procesando contacto {c_id}: {e}")
+
+                # 4. Pausa aleatoria
+                time.sleep(random.uniform(min_delay, max_delay))
+
+        except KeyboardInterrupt:
+            print(
+                f"\n[!] Proceso pausado manualmente por el usuario. Retornando {len(seguidores)} resultados parciales..."
+            )
+
+        return seguidores
 
 
 instagram = Instagram
