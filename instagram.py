@@ -227,6 +227,85 @@ class Instagram:
             print(f"[!] Error en get_id_by_search: {e}")
         return None
 
+    def get_user_metrics(
+        self,
+        user_identifier: Optional[str] = None,
+        username: Optional[str] = None,
+        user_id: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Consulta las métricas clave de un perfil (conteo de seguidores, seguidos,
+        si es privado, si es cuenta profesional/verificada).
+        Acepta tanto nombre de usuario (@username) como ID numérico por posición o keyword (username / user_id).
+        """
+        target = user_id or username or user_identifier
+        if not target:
+            return None
+
+        clean_target = str(target).strip()
+        target_uid = None
+        target_uname = None
+
+        if clean_target.isdigit():
+            target_uid = clean_target
+        else:
+            target_uname = clean_target.lower()
+            target_uid = self.get_id_by_search(target_uname)
+
+        # 1. Endpoint /api/v1/users/{user_id}/info/ (directo y fiable con sesión activa)
+        if target_uid:
+            url = f"{self.BASE_URL}/api/v1/users/{target_uid}/info/"
+            req_headers = {"Referer": f"{self.BASE_URL}/"}
+            try:
+                response = self.session.get(url, headers=req_headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    user = data.get("user", {})
+                    if user:
+                        return {
+                            "id": str(user.get("pk") or user.get("id")),
+                            "username": user.get("username"),
+                            "followers": user.get("follower_count", 0),
+                            "following": user.get("following_count", 0),
+                            "is_private": user.get("is_private", False),
+                            "is_verified": user.get("is_verified", False),
+                            "is_business": bool(
+                                user.get("is_business")
+                                or user.get("is_professional_account")
+                                or user.get("account_type", 1) > 1
+                            ),
+                        }
+            except Exception as e:
+                print(f"[!] Error consultando /api/v1/users/{target_uid}/info/: {e}")
+
+        # 2. Fallback a web_profile_info si disponemos de username
+        uname = target_uname or (clean_target if not clean_target.isdigit() else None)
+        if uname:
+            url = f"{self.BASE_URL}/api/v1/users/web_profile_info/?username={uname}"
+            req_headers = {"Referer": f"{self.BASE_URL}/{uname}/"}
+            try:
+                response = self.session.get(url, headers=req_headers)
+                if response.status_code == 200:
+                    data = response.json()
+                    user = data.get("data", {}).get("user", {})
+                    if user:
+                        return {
+                            "id": str(user.get("id")),
+                            "username": user.get("username"),
+                            "followers": user.get("edge_followed_by", {}).get("count", 0),
+                            "following": user.get("edge_follow", {}).get("count", 0),
+                            "is_private": user.get("is_private", False),
+                            "is_verified": user.get("is_verified", False),
+                            "is_business": bool(
+                                user.get("is_business_account", False)
+                                or user.get("is_professional_account", False)
+                            ),
+                        }
+            except Exception as e:
+                print(f"[!] Error consultando web_profile_info de @{uname}: {e}")
+
+        return None
+
     def get_following(
         self,
         target_user_id: str,
