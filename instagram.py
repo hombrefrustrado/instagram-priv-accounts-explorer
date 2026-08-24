@@ -1,10 +1,10 @@
+from collections import deque
+import json
 import random
 import time
 from typing import Any, Dict, List, Optional
 import requests
 from tqdm import tqdm
-import json
-from typing import Any, Dict, List, Optional
 
 
 
@@ -546,8 +546,93 @@ class Instagram:
             )
 
         return seguidores
+    def contacts_followin_to1_explorer(
+        self,
+        contacts: List[Dict[str, Any]],
+        target_id: str | int,
+        target_name: str,
+        cant: int = 10,
+        checkpoint_file: Optional[str] = "checkpoint_siguiendo.jsonl",
+        min_delay: float = 1.5,
+        max_delay: float = 3.5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Explora el grafo de contactos usando una cola (BFS) buscando qué usuarios públicos
+        siguen a `target_name`. Encola automáticamente nuevos perfiles para seguir la exploración.
+        """
+        target_id_str = str(target_id)
+        target_name_clean = target_name.strip().lower()
 
+        # 1. Conjunto de IDs ya visitados/encolados para evitar ciclos infinitos
+        comprobados_ids = {target_id_str}
 
+        # 2. Cola FIFO con los contactos iniciales públicos
+        cola = deque()
+        for c in contacts:
+            if isinstance(c, dict):
+                c_id = str(c.get("id", c.get("pk", "")))
+                if c_id and not c.get("is_private", True) and c_id != target_id_str:
+                    cola.append(c)
+                    comprobados_ids.add(c_id)
+
+        seguidores_encontrados: List[Dict[str, Any]] = []
+
+        pbar = tqdm(total=cant, desc="Explorando grafo de seguidores", unit="match")
+
+        try:
+            while cola and len(seguidores_encontrados) < cant:
+                # Extraemos el primer elemento de la cola (BFS)
+                contacto_actual = cola.popleft()
+                c_id = str(contacto_actual.get("id", contacto_actual.get("pk", "")))
+                username_actual = contacto_actual.get("username", c_id)
+
+                # Paso A: Comprobar si este contacto sigue al target
+                try:
+                    respuesta = self.search_in_following(c_id, target_name_clean)
+                    if respuesta and (respuesta.get("is_following") or respuesta.get("is_follower")):
+                        seguidores_encontrados.append(contacto_actual)
+                        pbar.update(1)
+
+                        if checkpoint_file:
+                            with open(checkpoint_file, "a", encoding="utf-8") as f:
+                                f.write(
+                                    json.dumps(contacto_actual, ensure_ascii=False) + "\n"
+                                )
+
+                except Exception as e:
+                    print(f"\n[!] Error comprobando relación para @{username_actual} ({c_id}): {e}")
+
+                time.sleep(random.uniform(min_delay, max_delay))
+
+                if len(seguidores_encontrados) >= cant:
+                    break
+
+                # Paso B: Obtener los seguidos de este usuario para expandir el grafo
+                try:
+                    data_following = self.get_following(c_id)
+                    if data_following and isinstance(data_following, dict):
+                        nuevos_usuarios = data_following.get("users", [])
+
+                        for u in nuevos_usuarios:
+                            u_id = str(u.get("id", u.get("pk", "")))
+                            # Si no es privado y no ha sido visitado, lo encolamos
+                            if u_id and u_id not in comprobados_ids and not u.get("is_private", True):
+                                comprobados_ids.add(u_id)
+                                cola.append(u)
+
+                except Exception as e:
+                    print(f"\n[!] Error expandiendo seguidos de @{username_actual}: {e}")
+
+                time.sleep(random.uniform(min_delay, max_delay))
+
+        except KeyboardInterrupt:
+            print(
+                f"\n[!] Proceso pausado manualmente. Retornando {len(seguidores_encontrados)} resultados parciales..."
+            )
+        finally:
+            pbar.close()
+
+        return seguidores_encontrados
 instagram = Instagram
 
 
